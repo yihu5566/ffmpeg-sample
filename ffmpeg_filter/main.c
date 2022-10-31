@@ -2,15 +2,24 @@
 #include "libavformat/avformat.h"
 #include "libavcodec/avcodec.h"
 #include "libavfilter/avfilter.h"
-#include "libavfilter/buffersink.h"
-#include "libavfilter/buffersrc.h"
 #include "libavutil/bprint.h"
 #include "libavutil/pixdesc.h"
+#include "libswscale/swscale.h"
+
+int save_rgb_to_file(AVFrame *frame, int num);
 
 int main() {
     int ret = 0;
     int err;
+    int read_end = 0;
+    int frame_num = 0;
+    AVPacket *pkt = av_packet_alloc();
+    AVFrame *frame = av_frame_alloc();
+
     char *filename = "/Users/dongfang/CLionProjects/ffmpeg-sample/mp4_file/juren-30s.mp4";
+
+    struct SwsContext *img_convert_ctx = NULL;
+
     AVFormatContext *fmt_ctx = avformat_alloc_context();
     if (!fmt_ctx) {
         printf("error code %d \n", AVERROR(ENOMEM));
@@ -22,7 +31,7 @@ int main() {
     }
     //打开音频解码器
     AVCodecContext *avctx = avcodec_alloc_context3(NULL);
-    ret = avcodec_parameters_to_context(avctx, fmt_ctx->streams[1]->codecpar);
+    ret = avcodec_parameters_to_context(avctx, fmt_ctx->streams[0]->codecpar);
     if (ret < 0) {
         printf(" error code %d \n", ret);
     }
@@ -31,27 +40,20 @@ int main() {
         printf("open codec fail \n");
         return ret;
     }
-    AVFilterGraph *filter_graph = NULL;
-    AVFilterContext *mainsrc_ctx, *resultsink_ctx = NULL;
 
-    AVPacket *pkt = av_packet_alloc();
-    AVFrame *frame = av_frame_alloc();
+    int sws_flags = SWS_BICUBIC;
     AVFrame *result_frame = av_frame_alloc();
-    //音频格式相关
-    const char *origin_sample_fmt = NULL;
-    const char *origin_sample_rate = NULL;
-    const char *origin_channel_layout = NULL;
-    const char *result_sample_fmt = NULL;
-    const char *result_sample_rate = NULL;
-    const char *result_channel_layout = NULL;
-    int read_end = 0;
-    int frame_num = 0;
+    //定义AVFrame的格式，宽高
+    result_frame->format = AV_PIX_FMT_BGRA;
+    result_frame->width = 200;
+    result_frame->height = 100;
+
     for (;;) {
         if (1 == read_end) {
             break;
         }
         ret = av_read_frame(fmt_ctx, pkt);
-        if (0 == pkt->stream_index) {
+        if (1 == pkt->stream_index) {
             av_packet_unref(pkt);
             continue;
         }
@@ -96,67 +98,30 @@ int main() {
                 read_end = 1;
                 break;
             } else if (ret >= 0) {
-                //这两个变量在本文里没有用的，只是要传进去。
-                AVFilterInOut *inputs, *outputs;
-                origin_sample_fmt = av_get_sample_fmt_name(frame->format);
-                printf("origin frame is %d,%s | %d | %d ,pts:%d, nb_samples:%d, duration:%d \n",
-                       frame->format, origin_sample_fmt, frame->sample_rate, (int) frame->channel_layout,
-                       (int) frame->pts, (int) frame->pkt_duration);
+                if (NULL == img_convert_ctx) {
+                    img_convert_ctx = sws_getCachedContext(img_convert_ctx, frame->width, frame->height, frame->format,
+                                                           result_frame->width, result_frame->height,
+                                                           result_frame->format, sws_flags, NULL, NULL, NULL);
 
-                if (NULL == filter_graph) {
-                    //初始化滤镜
-                    filter_graph = avfilter_graph_alloc();
-                    if (!filter_graph) {
-                        printf("Error: allocate filter graph failed\n");
-                        return -1;
+                    if (NULL == img_convert_ctx) {
+                        av_log(NULL, AV_LOG_FATAL, "no memory 1 \n");
+                        return ENOMEM;
                     }
-
-                    // 因为 filter 的输入是 AVFrame ，所以 filter 的时间基就是 AVFrame 的时间基
-                    AVRational tb = fmt_ctx->streams[0]->time_base;
-
-                    AVBPrint args;
-                    av_bprint_init(&args, 0, AV_BPRINT_SIZE_AUTOMATIC);
-                    av_bprintf(&args,
-                               "abuffer=sample_rate=%d:sample_fmt=%s:channel_layout=%d:time_base=%d/%d[main];"
-                               "[main]aformat=sample_rates=%d:sample_fmts=%s:channel_layouts=%d[result];"
-                               "[result]abuffersink",
-                               frame->sample_rate, origin_sample_fmt, (int) frame->channel_layout, tb.num, tb.den,
-                               44100, "s64", AV_CH_FRONT_RIGHT);
-
-                    //解析滤镜字符串。
-                    ret = avfilter_graph_parse2(filter_graph, args.str, &inputs, &outputs);
-                    if (ret < 0) {
-                        printf("Cannot configure graph\n");
-                        return ret;
-                    }
-
-                    //正式打开滤镜
-                    ret = avfilter_graph_config(filter_graph, NULL);
-                    if (ret < 0) {
-                        printf("Cannot configure graph\n");
-                        return ret;
-                    }
-
-                    //根据 名字 找到 AVFilterContext
-                    mainsrc_ctx = avfilter_graph_get_filter(filter_graph, "Parsed_abuffer_0");
-                    resultsink_ctx = avfilter_graph_get_filter(filter_graph, "Parsed_abuffersink_2");
+                }
+                ret = av_frame_get_buffer(result_frame, 1);
+                if (0 != ret) {
+                    av_log(NULL, AV_LOG_FATAL, "no memory 2\n");
+                    return ENOMEM;
                 }
 
-                ret = av_buffersrc_add_frame_flags(mainsrc_ctx, frame, AV_BUFFERSRC_FLAG_PUSH);
-                if (ret < 0) {
-                    printf("Error: av_buffersrc_add_frame failed\n");
-                    return ret;
-                }
+                sws_scale(img_convert_ctx, (const uint8_t *const *) frame->data, frame->linesize, 0, frame->height,
+                          result_frame->data,
+                          result_frame->linesize);
 
-                ret = av_buffersink_get_frame_flags(resultsink_ctx, result_frame, AV_BUFFERSRC_FLAG_PUSH);
-                if (ret >= 0) {
-                    result_sample_fmt = av_get_sample_fmt_name(result_frame->format);
-                    printf("result frame is %d,%s | %d | %d ,pts:%d, nb_samples:%d , duration:%d \n",
-                           result_frame->format, result_sample_fmt, result_frame->sample_rate,
-                           (int) result_frame->channel_layout,
-                           (int) result_frame->pts, result_frame->nb_samples, (int) result_frame->pkt_duration);
-                }
+                save_rgb_to_file(result_frame, frame_num);
 
+                av_frame_unref(frame);
+                av_frame_unref(result_frame);
                 frame_num++;
                 //只处理 10 帧音频
                 if (frame_num > 10) {
@@ -164,24 +129,37 @@ int main() {
                 }
 
             } else {
-                printf("other fail \n");
+                av_log(NULL, AV_LOG_FATAL, "other fail \n");
                 return ret;
             }
         }
     }
 
     av_frame_free(&frame);
-    av_frame_free(&result_frame);
     av_packet_free(&pkt);
+
+    sws_freeContext(img_convert_ctx);
+    img_convert_ctx = NULL;
 
     avcodec_close(avctx);
     avformat_free_context(fmt_ctx);
     printf("done \n");
 
-//释放滤镜
-    avfilter_graph_free(&filter_graph);
     return 0;
 }
 
 
 
+
+int save_rgb_to_file(AVFrame *frame, int num){
+    //拼接文件名
+    char pic_name[200] = {0};
+    sprintf(pic_name,"./rgba_8888_%d.yuv",num);
+
+    //写入文件
+    FILE *fp = NULL;
+    fp = fopen(pic_name, "wb+");
+    fwrite(frame->data[0] , 1, frame->linesize[0] * frame->height, fp);
+    fclose(fp);
+    return 0;
+}
