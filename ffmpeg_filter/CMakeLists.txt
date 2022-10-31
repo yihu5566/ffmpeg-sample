@@ -10,5 +10,7 @@ target_link_libraries(ffmpeg_filter
         avdevice
         avfilter
         avformat
+        swscale
+        swresample
 
         )
