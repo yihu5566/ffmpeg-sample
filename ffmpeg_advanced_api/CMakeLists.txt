@@ -13,5 +13,6 @@ target_link_libraries(ffmpeg_advanced_api
         avformat
         swscale
         swresample
+        avutil
 
         )
