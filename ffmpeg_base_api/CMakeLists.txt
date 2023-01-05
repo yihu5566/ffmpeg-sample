@@ -3,8 +3,8 @@ project(ffmpeg_base_api C)
 
 set(CMAKE_C_STANDARD 90)
 
-include_directories(/usr/local/Cellar/ffmpeg/5.1.2/include/)
-link_directories(/usr/local/Cellar/ffmpeg/5.1.2/lib/)
+include_directories(/usr/local/opt/ffmpeg@4/include)
+link_directories(/usr/local/opt/ffmpeg@4/lib)
 
 add_executable(ffmpeg_demo main.c)
 
